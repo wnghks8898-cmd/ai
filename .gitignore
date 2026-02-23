@@ -1,0 +1,7 @@
+# API Key 보호 — 절대 GitHub에 올라가면 안 됨
+.env
+
+# 기타
+__pycache__/
+*.pyc
+.DS_Store
