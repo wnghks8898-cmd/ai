@@ -56,11 +56,11 @@ SYSTEM_PROMPT = """
 #  무료 모델 목록 — :free 태그 = 크레딧 차감 없음
 # ══════════════════════════════════════════════════════════════
 OPENROUTER_MODELS = [
-    "deepseek/deepseek-r1:free",              # 최강 추론 (GPT-4o 급)
-    "deepseek/deepseek-chat-v3-0324:free",    # 빠르고 스마트
-    "meta-llama/llama-3.3-70b-instruct:free", # Meta 최강 무료
-    "google/gemma-3-27b-it:free",             # Google 무료
-    "mistralai/mistral-7b-instruct:free",     # 빠른 백업
+    "deepseek/deepseek-r1-distill-llama-70b:free",  # DeepSeek R1 (현재 작동)
+    "deepseek/deepseek-chat:free",                   # DeepSeek V3
+    "meta-llama/llama-3.3-70b-instruct:free",        # Meta 최강
+    "qwen/qwen-2.5-72b-instruct:free",               # Qwen 72B
+    "mistralai/mistral-7b-instruct:free",            # 빠른 백업
 ]
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
