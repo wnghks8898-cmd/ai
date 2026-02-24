@@ -55,15 +55,51 @@ SYSTEM_PROMPT = """
 #  OPENROUTER 설정
 #  무료 모델 목록 — :free 태그 = 크레딧 차감 없음
 # ══════════════════════════════════════════════════════════════
-OPENROUTER_MODELS = [
-    "deepseek/deepseek-r1-distill-llama-70b:free",  # DeepSeek R1 (현재 작동)
-    "deepseek/deepseek-chat:free",                   # DeepSeek V3
-    "meta-llama/llama-3.3-70b-instruct:free",        # Meta 최강
-    "qwen/qwen-2.5-72b-instruct:free",               # Qwen 72B
-    "mistralai/mistral-7b-instruct:free",            # 빠른 백업
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+# 혹시 API 조회 실패할 경우를 대비한 하드코딩 백업 목록
+FALLBACK_MODELS = [
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen-2.5-72b-instruct:free",
+    "google/gemma-3-12b-it:free",
+    "mistralai/mistral-7b-instruct:free",
+    "nousresearch/hermes-3-llama-3.1-8b:free",
 ]
 
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+@st.cache_data(ttl=3600)  # 1시간마다 갱신
+def fetch_free_models(api_key: str) -> list:
+    """OpenRouter에서 현재 실제로 사용 가능한 무료 모델 목록을 가져옴"""
+    try:
+        import requests
+        resp = requests.get(
+            "https://openrouter.ai/api/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return FALLBACK_MODELS
+        data = resp.json().get("data", [])
+        # :free 모델만 필터링, context 길이 큰 순서로 정렬
+        free_models = [
+            m["id"] for m in data
+            if m["id"].endswith(":free") and m.get("context_length", 0) > 0
+        ]
+        # 선호 모델 우선 정렬 (있으면 앞으로)
+        preferred = ["llama-3.3-70b", "deepseek", "qwen-2.5-72b", "gemma-3"]
+        def sort_key(mid):
+            for i, p in enumerate(preferred):
+                if p in mid:
+                    return i
+            return len(preferred)
+        free_models.sort(key=sort_key)
+        return free_models[:10] if free_models else FALLBACK_MODELS
+    except Exception:
+        return FALLBACK_MODELS
+
+def get_models() -> list:
+    if API_KEYS:
+        return fetch_free_models(API_KEYS[0])
+    return FALLBACK_MODELS
 
 def load_api_keys() -> list:
     """Streamlit Secrets → .env 순서로 키 로드"""
@@ -88,15 +124,15 @@ API_KEYS = load_api_keys()
 def call_openrouter(messages: list) -> tuple[str, str]:
     """
     OpenRouter API 호출 + 자동 Key/Model 로테이션.
-    session_state의 key_idx, model_idx를 직접 수정하여
-    st.rerun() 후에도 전환 상태가 유지됨.
+    사용 가능한 무료 모델을 API에서 실시간으로 가져와 사용.
     Returns: (answer, error)
     """
     if not API_KEYS:
         return "", "API Key가 설정되지 않았습니다."
 
+    models       = get_models()  # 실시간 무료 모델 목록
     total_keys   = len(API_KEYS)
-    total_models = len(OPENROUTER_MODELS)
+    total_models = len(models)
     total_tries  = total_keys * total_models
 
     for attempt in range(total_tries):
@@ -104,7 +140,7 @@ def call_openrouter(messages: list) -> tuple[str, str]:
         mi = st.session_state.model_idx % total_models
 
         current_key   = API_KEYS[ki]
-        current_model = OPENROUTER_MODELS[mi]
+        current_model = models[mi]
 
         try:
             client = OpenAI(
@@ -126,32 +162,34 @@ def call_openrouter(messages: list) -> tuple[str, str]:
         except Exception as e:
             err = str(e)
 
-            # 한도 초과 또는 모델 오류 → 다음 키/모델로 전환
-            if any(code in err for code in ["429", "402", "503", "overloaded", "rate"]):
-                # 다음 키로
-                st.session_state.key_idx += 1
+            # 404: 모델 없음 → 즉시 다음 모델로
+            if "404" in err:
+                st.session_state.model_idx += 1
+                mi = st.session_state.model_idx % total_models
+                st.toast(f"모델 전환 → {models[mi].split('/')[-1]}", icon="🔄")
+                if attempt < total_tries - 1:
+                    continue
 
-                # 모든 키 소진 시 다음 모델로
+            # 429/503: 한도 초과 → 다음 키, 키 소진 시 다음 모델
+            elif any(c in err for c in ["429", "402", "503", "rate", "overloaded"]):
+                st.session_state.key_idx += 1
                 if st.session_state.key_idx % total_keys == 0:
                     st.session_state.model_idx += 1
-                    next_mi    = st.session_state.model_idx % total_models
-                    next_model = OPENROUTER_MODELS[next_mi].split("/")[-1]
-                    st.toast(f"모델 전환 → {next_model}", icon="🔄")
+                    mi = st.session_state.model_idx % total_models
+                    st.toast(f"모델 전환 → {models[mi].split('/')[-1]}", icon="🔄")
                 else:
-                    next_ki = st.session_state.key_idx % total_keys
-                    st.toast(f"KEY {next_ki + 1}로 전환 중...", icon="🔑")
-
+                    st.toast(f"KEY {(st.session_state.key_idx % total_keys) + 1}로 전환", icon="🔑")
                 if attempt < total_tries - 1:
                     time.sleep(0.5)
                     continue
+
             else:
-                # 인증 오류 등 복구 불가 에러
                 return "", f"API 오류 ({current_model.split('/')[-1]}): {err[:200]}"
 
     return "", (
-        "⏳ **모든 Key와 모델의 한도가 초과되었습니다.**\n\n"
-        "잠시 후 다시 시도해 주세요.\n"
-        "또는 [OpenRouter](https://openrouter.ai/keys)에서 새 Key를 발급해 추가하세요."
+        "⏳ **현재 사용 가능한 무료 모델이 없습니다.**\n\n"
+        "잠시 후 다시 시도하거나 "
+        "[OpenRouter 무료 모델](https://openrouter.ai/models?q=free)을 확인해 주세요."
     )
 
 
@@ -526,8 +564,8 @@ with st.sidebar:
 
     total_keys = len(API_KEYS)
     cur_ki     = st.session_state.key_idx   % max(total_keys, 1)
-    cur_mi     = st.session_state.model_idx % len(OPENROUTER_MODELS)
-    cur_model  = OPENROUTER_MODELS[cur_mi].split("/")[-1].replace(":free", "")
+    cur_mi     = st.session_state.model_idx % len(get_models())
+    cur_model  = get_models()[cur_mi].split("/")[-1].replace(":free", "") if API_KEYS else "—"
 
     # Key 상태
     key_rows = ""
@@ -572,8 +610,8 @@ with st.sidebar:
 # ──────────────────────────────────────────────────────────────
 key_count = len(API_KEYS)
 if key_count:
-    cur_model_short = OPENROUTER_MODELS[
-        st.session_state.model_idx % len(OPENROUTER_MODELS)
+    cur_model_short = get_models()[
+        st.session_state.model_idx % len(get_models())
     ].split("/")[-1].replace(":free", "")
     badge = f'<span class="engine-badge">⬡ OpenRouter  ·  {key_count}/3 Key  ·  {cur_model_short}</span>'
 else:
@@ -664,8 +702,9 @@ def handle_message(user_text: str):
         or_messages.append({"role": m["role"], "content": m["content"]})
 
     # 현재 모델명
-    cur_model = OPENROUTER_MODELS[
-        st.session_state.model_idx % len(OPENROUTER_MODELS)
+    models    = get_models()
+    cur_model = models[
+        st.session_state.model_idx % len(models)
     ].split("/")[-1].replace(":free", "")
 
     with st.spinner(f"◈  분석 중  ·  {cur_model}"):
