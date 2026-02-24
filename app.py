@@ -1,18 +1,18 @@
 """
-AI MASTER MENTOR v6
+AI MASTER MENTOR v7
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-엔진: Groq API (무료, 하루 14,400회 × 3계정)
+엔진: OpenRouter (무료 최강 모델 — DeepSeek R1 등)
 실행: streamlit run app.py --server.address=0.0.0.0 --server.port=8501
 
 .env 파일 설정:
-  GROQ_API_KEY_1=gsk_...
-  GROQ_API_KEY_2=gsk_...
-  GROQ_API_KEY_3=gsk_...
+  OPENROUTER_API_KEY_1=sk-or-...
+  OPENROUTER_API_KEY_2=sk-or-...
+  OPENROUTER_API_KEY_3=sk-or-...
 
 Streamlit Cloud Secrets:
-  GROQ_API_KEY_1 = "gsk_..."
-  GROQ_API_KEY_2 = "gsk_..."
-  GROQ_API_KEY_3 = "gsk_..."
+  OPENROUTER_API_KEY_1 = "sk-or-..."
+  OPENROUTER_API_KEY_2 = "sk-or-..."
+  OPENROUTER_API_KEY_3 = "sk-or-..."
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -20,7 +20,7 @@ import os, time
 import streamlit as st
 from streamlit_mic_recorder import speech_to_text
 from dotenv import load_dotenv
-from groq import Groq
+from openai import OpenAI
 
 load_dotenv()
 
@@ -52,108 +52,112 @@ SYSTEM_PROMPT = """
 """
 
 # ══════════════════════════════════════════════════════════════
-#  GROQ 설정
+#  OPENROUTER 설정
+#  무료 모델 목록 — :free 태그 = 크레딧 차감 없음
 # ══════════════════════════════════════════════════════════════
-
-# 무료 모델 목록 (성능 순)
-GROQ_MODELS = [
-    "llama-3.3-70b-versatile",   # 최강 성능
-    "llama-3.1-8b-instant",      # 빠른 응답
-    "mixtral-8x7b-32768",        # 긴 대화
-    "gemma2-9b-it",              # 경량 백업
+OPENROUTER_MODELS = [
+    "deepseek/deepseek-r1:free",              # 최강 추론 (GPT-4o 급)
+    "deepseek/deepseek-chat-v3-0324:free",    # 빠르고 스마트
+    "meta-llama/llama-3.3-70b-instruct:free", # Meta 최강 무료
+    "google/gemma-3-27b-it:free",             # Google 무료
+    "mistralai/mistral-7b-instruct:free",     # 빠른 백업
 ]
 
-def load_groq_keys() -> list:
-    """Streamlit Secrets → .env 순으로 키 로드"""
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+def load_api_keys() -> list:
+    """Streamlit Secrets → .env 순서로 키 로드"""
     keys = []
     try:
         for i in range(1, 4):
-            k = st.secrets.get(f"GROQ_API_KEY_{i}", "").strip()
+            k = st.secrets.get(f"OPENROUTER_API_KEY_{i}", "").strip()
             if k:
                 keys.append(k)
     except Exception:
         pass
     if not keys:
         for i in range(1, 4):
-            k = os.getenv(f"GROQ_API_KEY_{i}", "").strip()
+            k = os.getenv(f"OPENROUTER_API_KEY_{i}", "").strip()
             if k:
                 keys.append(k)
     return keys
 
-GROQ_KEYS = load_groq_keys()
+API_KEYS = load_api_keys()
 
-# ──────────────────────────────────────────────────────────────
-#  핵심 수정: 키/모델 인덱스를 st.session_state에 저장
-#  → rerun 후에도 전환된 키/모델이 유지됨
-# ──────────────────────────────────────────────────────────────
-def call_groq_with_rotation(messages: list) -> tuple[str, str]:
-    """
-    할당량 초과 시 key → model 순으로 자동 전환.
-    rerun 후에도 전환 상태가 유지되도록 session_state 사용.
-    Returns: (answer, error_message)
-    """
-    if not GROQ_KEYS:
-        return "", "GROQ_API_KEY가 설정되지 않았습니다."
 
-    total_keys   = len(GROQ_KEYS)
-    total_models = len(GROQ_MODELS)
+def call_openrouter(messages: list) -> tuple[str, str]:
+    """
+    OpenRouter API 호출 + 자동 Key/Model 로테이션.
+    session_state의 key_idx, model_idx를 직접 수정하여
+    st.rerun() 후에도 전환 상태가 유지됨.
+    Returns: (answer, error)
+    """
+    if not API_KEYS:
+        return "", "API Key가 설정되지 않았습니다."
+
+    total_keys   = len(API_KEYS)
+    total_models = len(OPENROUTER_MODELS)
     total_tries  = total_keys * total_models
 
     for attempt in range(total_tries):
         ki = st.session_state.key_idx   % total_keys
         mi = st.session_state.model_idx % total_models
 
-        current_key   = GROQ_KEYS[ki]
-        current_model = GROQ_MODELS[mi]
+        current_key   = API_KEYS[ki]
+        current_model = OPENROUTER_MODELS[mi]
 
         try:
-            client = Groq(api_key=current_key)
-            resp   = client.chat.completions.create(
+            client = OpenAI(
+                api_key  = current_key,
+                base_url = OPENROUTER_BASE_URL,
+            )
+            resp = client.chat.completions.create(
                 model      = current_model,
                 messages   = messages,
                 max_tokens = 4096,
                 temperature= 0.7,
+                extra_headers={
+                    "HTTP-Referer": "https://ai-master-mentor.streamlit.app",
+                    "X-Title": "AI Master Mentor",
+                },
             )
             return resp.choices[0].message.content, ""
 
         except Exception as e:
             err = str(e)
 
-            # 429 할당량 초과 → 다음 키 시도
-            if "429" in err or "rate" in err.lower() or "quota" in err.lower():
-
-                # 다음 키로 이동
+            # 한도 초과 또는 모델 오류 → 다음 키/모델로 전환
+            if any(code in err for code in ["429", "402", "503", "overloaded", "rate"]):
+                # 다음 키로
                 st.session_state.key_idx += 1
 
-                # 모든 키 소진 → 다음 모델로 전환
+                # 모든 키 소진 시 다음 모델로
                 if st.session_state.key_idx % total_keys == 0:
                     st.session_state.model_idx += 1
-                    next_model = GROQ_MODELS[st.session_state.model_idx % total_models]
+                    next_mi    = st.session_state.model_idx % total_models
+                    next_model = OPENROUTER_MODELS[next_mi].split("/")[-1]
                     st.toast(f"모델 전환 → {next_model}", icon="🔄")
                 else:
-                    next_key_num = (st.session_state.key_idx % total_keys) + 1
-                    st.toast(f"KEY {next_key_num}로 전환 중...", icon="🔑")
+                    next_ki = st.session_state.key_idx % total_keys
+                    st.toast(f"KEY {next_ki + 1}로 전환 중...", icon="🔑")
 
-                # 마지막 시도가 아니면 잠깐 대기 후 재시도
                 if attempt < total_tries - 1:
-                    time.sleep(1)
+                    time.sleep(0.5)
                     continue
-
             else:
-                # 429 외 다른 오류 (인증 실패 등)
-                return "", f"API 오류: {err}"
+                # 인증 오류 등 복구 불가 에러
+                return "", f"API 오류 ({current_model.split('/')[-1]}): {err[:200]}"
 
-    # 모든 키/모델 소진
     return "", (
-        "⏳ 모든 API Key의 분당 한도가 초과되었습니다.\n\n"
-        "**1분 후 다시 시도해 주세요.**\n\n"
-        "하루 한도가 소진된 경우 내일 자정(UTC)에 초기화됩니다."
+        "⏳ **모든 Key와 모델의 한도가 초과되었습니다.**\n\n"
+        "잠시 후 다시 시도해 주세요.\n"
+        "또는 [OpenRouter](https://openrouter.ai/keys)에서 새 Key를 발급해 추가하세요."
     )
+
 
 # ══════════════════════════════════════════════════════════════
 #  STREAMLIT 앱
 # ══════════════════════════════════════════════════════════════
-
 st.set_page_config(
     page_title="AI Master Mentor",
     page_icon="◆",
@@ -163,7 +167,7 @@ st.set_page_config(
 )
 
 # ──────────────────────────────────────────────────────────────
-#  CSS — THE ATELIER (Luxury Editorial Theme)
+#  CSS — THE ATELIER THEME
 # ──────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -182,7 +186,7 @@ st.markdown("""
     --shadow: rgba(26,23,20,0.08);
 }
 
-html, body { margin: 0; padding: 0; }
+html, body { margin:0; padding:0; }
 
 [data-testid="stAppViewContainer"] {
     background: var(--bg) !important;
@@ -234,8 +238,24 @@ html, body { margin: 0; padding: 0; }
     font-weight: 700;
     letter-spacing: 2.5px;
     text-transform: uppercase;
-    background: #2D1B69;
-    color: #E0D4FF;
+    background: #1A3A5C;
+    color: #C8DEFF;
+}
+.engine-badge.warn { background: #5C1A1A; color: #FFC8C8; }
+
+/* ── Model tag ── */
+.model-tag {
+    display: inline-block;
+    background: rgba(27,77,62,0.10);
+    border: 1px solid rgba(27,77,62,0.20);
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    padding: 3px 10px;
+    border-radius: 2px;
+    margin-left: 6px;
+    vertical-align: middle;
 }
 
 /* ── Role Labels ── */
@@ -253,7 +273,7 @@ html, body { margin: 0; padding: 0; }
 .user-lbl { color: var(--gold);   justify-content: flex-end; }
 .ai-lbl   { color: var(--accent); justify-content: flex-start; }
 
-/* ── Bubbles ── */
+/* ── Chat Bubbles ── */
 .row-user { display: flex; justify-content: flex-end; }
 .row-ai   { display: flex; justify-content: flex-start; }
 
@@ -277,10 +297,12 @@ html, body { margin: 0; padding: 0; }
     border: 1px solid var(--line);
     box-shadow: 0 2px 18px var(--shadow);
 }
+
+/* AI 버블 내부 텍스트 */
 .bubble-ai p      { color: var(--dark) !important; font-size:15px; line-height:1.85; }
 .bubble-ai li     { color: var(--mid)  !important; font-size:15px; line-height:1.8; }
 .bubble-ai strong { color: var(--dark) !important; font-weight:600; }
-.bubble-ai em     { color: var(--accent); font-style:italic; }
+.bubble-ai em     { color: var(--accent); }
 .bubble-ai a      { color: var(--accent); text-underline-offset:3px; }
 .bubble-ai h1, .bubble-ai h2, .bubble-ai h3 {
     font-family: 'Cormorant Garamond', serif !important;
@@ -311,13 +333,14 @@ html, body { margin: 0; padding: 0; }
 .bubble-ai pre code {
     background: transparent !important;
     color: #A8D8C0 !important;
-    border: none; padding: 0;
+    border: none;
+    padding: 0;
 }
 .bubble-ai table { width:100%; border-collapse:collapse; margin:14px 0; font-size:14px; }
 .bubble-ai th {
     background: var(--paper) !important;
     color: var(--accent) !important;
-    font-size: 11px; font-weight:700;
+    font-size:11px; font-weight:700;
     letter-spacing:1px; text-transform:uppercase;
     padding: 10px 14px;
     border: 1px solid var(--line);
@@ -328,7 +351,7 @@ html, body { margin: 0; padding: 0; }
     border: 1px solid var(--line);
     vertical-align: top;
 }
-.bubble-ai tr:nth-child(even) td { background: rgba(239,235,227,0.55) !important; }
+.bubble-ai tr:nth-child(even) td { background:rgba(239,235,227,0.55) !important; }
 .bubble-ai blockquote {
     border-left: 3px solid var(--accent);
     padding: 4px 0 4px 16px;
@@ -359,7 +382,7 @@ div[data-testid="stButton"] > button:hover {
     transform: translateY(-2px) !important;
     box-shadow: 0 8px 28px rgba(27,77,62,0.32) !important;
 }
-div[data-testid="stButton"] > button:active { transform: scale(0.98) !important; }
+div[data-testid="stButton"] > button:active { transform:scale(0.98) !important; }
 
 /* ── Chat Input ── */
 [data-testid="stChatInput"] {
@@ -379,19 +402,16 @@ div[data-testid="stButton"] > button:active { transform: scale(0.98) !important;
     transition: border-color 0.2s !important;
 }
 [data-testid="stChatInput"] textarea:focus  { border-color: var(--accent) !important; }
-[data-testid="stChatInput"] textarea::placeholder {
-    color: var(--soft) !important;
-    font-style: italic;
-}
+[data-testid="stChatInput"] textarea::placeholder { color:var(--soft) !important; font-style:italic; }
 [data-testid="stChatInput"] button svg { fill: var(--accent) !important; }
 
 /* ── Sidebar ── */
 [data-testid="stSidebar"] {
-    background: #100E0C !important;
-    border-right: 1px solid #242018 !important;
+    background: #0E0C0A !important;
+    border-right: 1px solid #222018 !important;
 }
 [data-testid="stSidebar"] * {
-    color: rgba(240,235,225,0.82) !important;
+    color: rgba(240,235,225,0.80) !important;
     font-family: 'DM Sans', sans-serif !important;
 }
 [data-testid="stSidebar"] h3 {
@@ -400,18 +420,18 @@ div[data-testid="stButton"] > button:active { transform: scale(0.98) !important;
     font-weight: 300 !important;
     letter-spacing: 1px;
 }
-[data-testid="stSidebar"] hr { border-color: #2A2620 !important; }
+[data-testid="stSidebar"] hr { border-color: #262218 !important; }
 [data-testid="stSidebar"] [data-testid="stButton"] > button {
-    background: rgba(255,255,255,0.06) !important;
-    border: 1px solid rgba(255,255,255,0.10) !important;
-    color: rgba(240,235,225,0.82) !important;
+    background: rgba(255,255,255,0.05) !important;
+    border: 1px solid rgba(255,255,255,0.09) !important;
+    color: rgba(240,235,225,0.80) !important;
     box-shadow: none !important;
     font-size: 11px !important;
     letter-spacing: 2px !important;
     transform: none !important;
 }
 [data-testid="stSidebar"] [data-testid="stButton"] > button:hover {
-    background: rgba(255,255,255,0.11) !important;
+    background: rgba(255,255,255,0.10) !important;
     transform: none !important;
     box-shadow: none !important;
 }
@@ -423,7 +443,7 @@ div[data-testid="stButton"] > button:active { transform: scale(0.98) !important;
     letter-spacing: 2px !important;
 }
 
-/* ── Divider ── */
+/* ── OR Divider ── */
 .or-divider {
     display: flex;
     align-items: center;
@@ -438,7 +458,7 @@ div[data-testid="stButton"] > button:active { transform: scale(0.98) !important;
 .or-divider::before,
 .or-divider::after { content:''; flex:1; height:1px; background:var(--line); }
 
-/* ── Setup card ── */
+/* ── Setup Card ── */
 .setup-card {
     background: var(--white);
     border: 1px solid var(--line);
@@ -489,9 +509,9 @@ div[data-testid="stButton"] > button:active { transform: scale(0.98) !important;
 #  SESSION STATE 초기화
 # ──────────────────────────────────────────────────────────────
 defaults = {
-    "messages":   [],  # [{"role":"user"|"assistant","content":"..."}]
-    "key_idx":    0,   # 현재 사용 중인 Groq Key 인덱스 (rerun 후에도 유지)
-    "model_idx":  0,   # 현재 사용 중인 모델 인덱스  (rerun 후에도 유지)
+    "messages":   [],
+    "key_idx":    0,   # rerun 후에도 유지
+    "model_idx":  0,   # rerun 후에도 유지
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -504,21 +524,21 @@ with st.sidebar:
     st.markdown("### ◆ 설정")
     st.markdown("---")
 
-    total_keys = len(GROQ_KEYS)
+    total_keys = len(API_KEYS)
     cur_ki     = st.session_state.key_idx   % max(total_keys, 1)
-    cur_mi     = st.session_state.model_idx % len(GROQ_MODELS)
-    cur_model  = GROQ_MODELS[cur_mi]
+    cur_mi     = st.session_state.model_idx % len(OPENROUTER_MODELS)
+    cur_model  = OPENROUTER_MODELS[cur_mi].split("/")[-1].replace(":free", "")
 
-    # Key 상태 표시
+    # Key 상태
     key_rows = ""
     for i in range(3):
         if i < total_keys:
-            is_cur = (i == cur_ki) and total_keys > 0
-            color  = "#5DBF8A" if is_cur else "#6B7070"
-            marker = " ← 사용중" if is_cur else ""
-            key_rows += f'<div style="font-size:12px;color:{color};margin:5px 0">● KEY {i+1}{marker}</div>'
+            is_cur = (i == cur_ki)
+            color  = "#5DBF8A" if is_cur else "#5A6060"
+            mark   = " ← 사용중" if is_cur else ""
+            key_rows += f'<div style="font-size:12px;color:{color};margin:5px 0">● KEY {i+1}{mark}</div>'
         else:
-            key_rows += f'<div style="font-size:12px;color:#3D3A37;margin:5px 0">○ KEY {i+1} (미등록)</div>'
+            key_rows += f'<div style="font-size:12px;color:#333;margin:5px 0">○ KEY {i+1} (미등록)</div>'
 
     st.markdown(
         f'<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);'
@@ -526,63 +546,72 @@ with st.sidebar:
         f'<div style="font-size:9px;letter-spacing:3px;color:#555;margin-bottom:8px">API KEY 상태</div>'
         f'{key_rows}'
         f'<div style="margin-top:12px;font-size:9px;letter-spacing:2px;color:#555">현재 모델</div>'
-        f'<div style="font-size:13px;color:#A8D8C0;font-weight:500;margin-top:4px">{cur_model}</div>'
+        f'<div style="font-size:12px;color:#A8D8C0;font-weight:500;margin-top:4px">{cur_model}</div>'
         f'</div>',
         unsafe_allow_html=True,
     )
 
     st.markdown("---")
     if st.button("↺  대화 초기화", use_container_width=True):
-        st.session_state.messages   = []
-        st.session_state.key_idx    = 0
-        st.session_state.model_idx  = 0
+        st.session_state.messages  = []
+        st.session_state.key_idx   = 0
+        st.session_state.model_idx = 0
         st.rerun()
 
     st.markdown("---")
     st.markdown(
-        '<div style="font-size:11px;color:rgba(255,255,255,0.22);line-height:2.1">'
-        '분당 한도 초과 시<br>Key → Model 자동 전환<br><br>'
-        'Groq 무료: 분당 30회<br>3개 Key = 최대 90회/분</div>',
+        '<div style="font-size:11px;color:rgba(255,255,255,0.20);line-height:2.2">'
+        'DeepSeek R1 = GPT-4o 급<br>'
+        '무료 모델 = 크레딧 차감 없음<br><br>'
+        '한도 초과 시<br>Key → Model 자동 전환</div>',
         unsafe_allow_html=True,
     )
 
 # ──────────────────────────────────────────────────────────────
 #  HEADER
 # ──────────────────────────────────────────────────────────────
-key_count = len(GROQ_KEYS)
-badge_txt = f"⬡ Groq Cloud  ·  {key_count} / 3 Key Active" if key_count else "⚠ API Key 설정 필요"
+key_count = len(API_KEYS)
+if key_count:
+    cur_model_short = OPENROUTER_MODELS[
+        st.session_state.model_idx % len(OPENROUTER_MODELS)
+    ].split("/")[-1].replace(":free", "")
+    badge = f'<span class="engine-badge">⬡ OpenRouter  ·  {key_count}/3 Key  ·  {cur_model_short}</span>'
+else:
+    badge = '<span class="engine-badge warn">⚠ API Key 설정 필요</span>'
 
 st.markdown(f"""
 <div class="app-header">
     <div class="app-eyebrow">Supreme Intelligence System</div>
     <h1 class="app-title">Master <em>Mentor</em></h1>
-    <div class="app-sub">세계 최고 수준의 통찰 &nbsp;·&nbsp; Powered by Groq</div>
-    <span class="engine-badge">{badge_txt}</span>
+    <div class="app-sub">세계 최고 수준의 통찰 &nbsp;·&nbsp; Powered by OpenRouter</div>
+    {badge}
 </div>
 """, unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────
-#  API KEY 없을 때 안내
+#  API KEY 없을 때 설정 안내
 # ──────────────────────────────────────────────────────────────
-if not GROQ_KEYS:
+if not API_KEYS:
     st.markdown("""
 <div class="setup-card">
-<h4>🔧 Groq API Key를 설정해 주세요</h4>
-<strong>Step 1.</strong> <a href="https://console.groq.com" target="_blank">console.groq.com</a> 접속 → 무료 가입<br>
-<strong>Step 2.</strong> 왼쪽 메뉴 <code>API Keys</code> → <code>Create API Key</code> → 키 복사<br>
-<strong>Step 3.</strong> 아래 중 하나로 등록:
+<h4>🔧 OpenRouter API Key를 설정해 주세요</h4>
 
-<strong>로컬 실행 (.env 파일):</strong>
-<pre>GROQ_API_KEY_1=gsk_여기에_키_입력
-GROQ_API_KEY_2=gsk_여기에_키_입력
-GROQ_API_KEY_3=gsk_여기에_키_입력</pre>
+<strong>Step 1.</strong> <a href="https://openrouter.ai" target="_blank" style="color:#1B4D3E;font-weight:600">openrouter.ai</a> 접속 → 무료 가입<br>
+<strong>Step 2.</strong> 우측 상단 프로필 → <code>API Keys</code> → <code>Create Key</code> → 키 복사<br>
+<strong>Step 3.</strong> 아래 중 한 곳에 등록:
 
-<strong>Streamlit Cloud (Secrets 탭):</strong>
-<pre>GROQ_API_KEY_1 = "gsk_여기에_키_입력"
-GROQ_API_KEY_2 = "gsk_여기에_키_입력"
-GROQ_API_KEY_3 = "gsk_여기에_키_입력"</pre>
+<strong>① 로컬 실행 (.env 파일)</strong>
+<pre>OPENROUTER_API_KEY_1=sk-or-여기에_키_입력
+OPENROUTER_API_KEY_2=sk-or-여기에_키_입력
+OPENROUTER_API_KEY_3=sk-or-여기에_키_입력</pre>
 
-저장 후 앱을 재시작하면 바로 사용 가능합니다.
+<strong>② Streamlit Cloud (Secrets 탭)</strong>
+<pre>OPENROUTER_API_KEY_1 = "sk-or-여기에_키_입력"
+OPENROUTER_API_KEY_2 = "sk-or-여기에_키_입력"
+OPENROUTER_API_KEY_3 = "sk-or-여기에_키_입력"</pre>
+
+저장 후 앱을 재시작하면 바로 사용 가능합니다.<br>
+<span style="color:#1B4D3E;font-weight:600">무료 모델(:free)은 크레딧 차감 없이 무제한 사용 가능합니다.</span>
 </div>
 """, unsafe_allow_html=True)
     st.stop()
@@ -618,7 +647,7 @@ def handle_message(user_text: str):
     if not user_text.strip():
         return
 
-    # 사용자 버블 즉시 표시
+    # 사용자 버블
     st.markdown(
         '<div class="role-label user-lbl"><span class="ln"></span>✦ 나의 질문</div>',
         unsafe_allow_html=True,
@@ -629,22 +658,25 @@ def handle_message(user_text: str):
     )
     st.session_state.messages.append({"role": "user", "content": user_text})
 
-    # Groq API 메시지 형식으로 변환
-    groq_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # OpenRouter 메시지 구성
+    or_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for m in st.session_state.messages:
-        groq_messages.append({"role": m["role"], "content": m["content"]})
+        or_messages.append({"role": m["role"], "content": m["content"]})
 
-    # 현재 모델명 표시
-    cur_model = GROQ_MODELS[st.session_state.model_idx % len(GROQ_MODELS)]
+    # 현재 모델명
+    cur_model = OPENROUTER_MODELS[
+        st.session_state.model_idx % len(OPENROUTER_MODELS)
+    ].split("/")[-1].replace(":free", "")
+
     with st.spinner(f"◈  분석 중  ·  {cur_model}"):
-        answer, error = call_groq_with_rotation(groq_messages)
+        answer, error = call_openrouter(or_messages)
 
     if error:
         answer = f"**⚠️ 오류**\n\n{error}"
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
 
-    # AI 버블 표시
+    # AI 버블
     st.markdown(
         '<div class="role-label ai-lbl">◈ 마스터 멘토<span class="ln"></span></div>',
         unsafe_allow_html=True,
@@ -652,7 +684,6 @@ def handle_message(user_text: str):
     st.markdown('<div class="bubble bubble-ai">', unsafe_allow_html=True)
     st.markdown(answer)
     st.markdown('</div>', unsafe_allow_html=True)
-
 
 # ──────────────────────────────────────────────────────────────
 #  INPUT — 음성 + 텍스트
